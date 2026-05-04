@@ -1,0 +1,74 @@
+name: Import Scans -> DefectDojo (CD)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Target: OWASP NodeGoat
+#
+# Triggers automatically after the CI workflow completes successfully.
+# All target-specific variables (APP_NAME, DOJO_PRODUCT_ID, enable-flags, …)
+# are read from the scan_meta.env file that the CI step wrote into RUN_OUTPUT_DIR.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_run:
+    workflows: ["DevSecOps - Security Scans (CI)"]
+    types: [completed]
+
+jobs:
+  import-to-defectdojo:
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    env:
+      DOJO_URL: "http://localhost:8080"
+      DOJO_ENGAGEMENT_NAME: "DevSecOps CI/CD"
+      DOJO_ENGAGEMENT_LEAD_USERNAME: "admin"
+
+      # DefectDojo scan-type names (parser identifiers — do not change
+      # unless you change the DD parser configuration).
+      SCAN_TYPE_TRIVY_FS:    "Trivy Scan"
+      SCAN_TYPE_TRIVY_IMAGE: "Trivy Scan"
+      SCAN_TYPE_ZAP:         "ZAP Scan"
+      SCAN_TYPE_SEMGREP:     "Semgrep JSON Report"
+
+      # CI/CD metadata forwarded to DefectDojo engagement fields.
+      BUILD_ID:    ${{ github.event.workflow_run.id }}
+      COMMIT_HASH: ${{ github.event.workflow_run.head_sha }}
+      BRANCH_TAG:  ${{ github.event.workflow_run.head_branch }}
+      REPO_URI:    "${{ github.server_url }}/${{ github.repository }}"
+      TEST_STRATEGY: "https://github.com/${{ github.repository }}/actions"
+
+      # Folder created by the CI run (keyed on the triggering run's ID).
+      RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.event.workflow_run.id }}"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Verify the metadata file exists ───────────────────────────────────
+      - name: Verify scan_meta.env exists
+        shell: bash
+        run: |
+          if [[ ! -f "$RUN_OUTPUT_DIR/scan_meta.env" ]]; then
+            echo "ERROR: $RUN_OUTPUT_DIR/scan_meta.env not found."
+            echo "       Either the CI run did not complete its setup step,"
+            echo "       or the output directory has been cleaned prematurely."
+            exit 1
+          fi
+          echo "scan_meta.env found:"
+          cat "$RUN_OUTPUT_DIR/scan_meta.env"
+
+      # ── Import scans ───────────────────────────────────────────────────────
+      - name: Import scans via script
+        shell: bash
+        env:
+          DOJO_TOKEN: ${{ secrets.DOJO_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/import_scans.sh
+
+      # ── Cleanup ───────────────────────────────────────────────────────────
+      - name: Cleanup run folder
+        if: always()
+        shell: bash
+        run: rm -rf "$RUN_OUTPUT_DIR" || true

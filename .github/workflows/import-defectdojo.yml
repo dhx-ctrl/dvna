@@ -1,11 +1,10 @@
 name: Import Scans -> DefectDojo (CD)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Target: OWASP NodeGoat
-#
 # Triggers automatically after the CI workflow completes successfully.
 # All target-specific variables (APP_NAME, DOJO_PRODUCT_ID, enable-flags, …)
 # are read from the scan_meta.env file that the CI step wrote into RUN_OUTPUT_DIR.
+# You never need to duplicate those values here.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -24,8 +23,8 @@ jobs:
       DOJO_ENGAGEMENT_NAME: "DevSecOps CI/CD"
       DOJO_ENGAGEMENT_LEAD_USERNAME: "admin"
 
-      # DefectDojo scan-type names (parser identifiers — do not change
-      # unless you change the DD parser configuration).
+      # DefectDojo scan-type names (these are DefectDojo's own parser identifiers
+      # and must not be changed unless you change the DD parser configuration).
       SCAN_TYPE_TRIVY_FS:    "Trivy Scan"
       SCAN_TYPE_TRIVY_IMAGE: "Trivy Scan"
       SCAN_TYPE_ZAP:         "ZAP Scan"
@@ -46,6 +45,10 @@ jobs:
         uses: actions/checkout@v4
 
       # ── Verify the metadata file exists ───────────────────────────────────
+      # This file is written by CI and contains all target-specific variables.
+      # If it is missing, the CI run either failed before writing it or the
+      # RUN_OUTPUT_DIR has already been cleaned up — abort early with a clear
+      # message rather than running with wrong/missing configuration.
       - name: Verify scan_meta.env exists
         shell: bash
         run: |

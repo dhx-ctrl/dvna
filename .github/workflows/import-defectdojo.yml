@@ -1,10 +1,17 @@
 name: Import Scans -> DefectDojo (CD)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Triggers automatically after the CI workflow completes successfully.
-# All target-specific variables (APP_NAME, DOJO_PRODUCT_ID, enable-flags, …)
-# are read from the scan_meta.env file that the CI step wrote into RUN_OUTPUT_DIR.
-# You never need to duplicate those values here.
+# Triggers automatically after the CI workflow completes.
+#
+# All target-specific variables (APP_NAME, scanner flags, …) are read from
+# the scan_meta.env file that CI wrote.  No per-app configuration needed here.
+#
+# DefectDojo hierarchy (resolved by name — no numeric IDs required):
+#
+#   Product Type  →  "CI-CD Apps"
+#   Product       →  ${APP_NAME}   (from scan_meta.env)
+#   Engagement    →  "DevSecOps-CICD"
+#   Tests         →  "${APP_NAME} - Semgrep SAST", etc.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -19,36 +26,38 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     env:
+      # ── DefectDojo connection ──────────────────────────────────────────────
       DOJO_URL: "http://localhost:8080"
-      DOJO_ENGAGEMENT_NAME: "DevSecOps CI/CD"
+
+      # ── DefectDojo hierarchy names ─────────────────────────────────────────
+      # The import script resolves these by name → auto-creates if missing.
+      # No numeric DOJO_PRODUCT_ID needed.
+      DOJO_PRODUCT_TYPE_NAME: "CI-CD Apps"
+      DOJO_ENGAGEMENT_NAME:   "DevSecOps-CICD"
       DOJO_ENGAGEMENT_LEAD_USERNAME: "admin"
 
-      # DefectDojo scan-type names (these are DefectDojo's own parser identifiers
-      # and must not be changed unless you change the DD parser configuration).
+      # ── DefectDojo scan-type parser names ──────────────────────────────────
+      # These are DD's own parser identifiers — change only if you change
+      # the DD parser configuration.
       SCAN_TYPE_TRIVY_FS:    "Trivy Scan"
       SCAN_TYPE_TRIVY_IMAGE: "Trivy Scan"
       SCAN_TYPE_ZAP:         "ZAP Scan"
       SCAN_TYPE_SEMGREP:     "Semgrep JSON Report"
 
-      # CI/CD metadata forwarded to DefectDojo engagement fields.
-      BUILD_ID:    ${{ github.event.workflow_run.id }}
-      COMMIT_HASH: ${{ github.event.workflow_run.head_sha }}
-      BRANCH_TAG:  ${{ github.event.workflow_run.head_branch }}
-      REPO_URI:    "${{ github.server_url }}/${{ github.repository }}"
+      # ── CI/CD metadata ────────────────────────────────────────────────────
+      BUILD_ID:      ${{ github.event.workflow_run.id }}
+      COMMIT_HASH:   ${{ github.event.workflow_run.head_sha }}
+      BRANCH_TAG:    ${{ github.event.workflow_run.head_branch }}
+      REPO_URI:      "${{ github.server_url }}/${{ github.repository }}"
       TEST_STRATEGY: "https://github.com/${{ github.repository }}/actions"
 
-      # Folder created by the CI run (keyed on the triggering run's ID).
+      # ── Scan output folder (written by CI) ────────────────────────────────
       RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.event.workflow_run.id }}"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Verify the metadata file exists ───────────────────────────────────
-      # This file is written by CI and contains all target-specific variables.
-      # If it is missing, the CI run either failed before writing it or the
-      # RUN_OUTPUT_DIR has already been cleaned up — abort early with a clear
-      # message rather than running with wrong/missing configuration.
       - name: Verify scan_meta.env exists
         shell: bash
         run: |
@@ -61,7 +70,6 @@ jobs:
           echo "scan_meta.env found:"
           cat "$RUN_OUTPUT_DIR/scan_meta.env"
 
-      # ── Import scans ───────────────────────────────────────────────────────
       - name: Import scans via script
         shell: bash
         env:
@@ -70,7 +78,6 @@ jobs:
           set -euo pipefail
           bash .github/scripts/import_scans.sh
 
-      # ── Cleanup ───────────────────────────────────────────────────────────
       - name: Cleanup run folder
         if: always()
         shell: bash

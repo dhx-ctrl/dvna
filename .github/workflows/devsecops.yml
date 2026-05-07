@@ -19,10 +19,6 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      DOJO_PRODUCT_ID:
-        description: "DefectDojo product ID for DVNA"
-        required: false
-        default: "3"
       ENABLE_SEMGREP:
         description: "Run Semgrep SAST?"
         required: false
@@ -55,7 +51,6 @@ jobs:
       APP_PORT:          "9090"
       CONTAINER_PORT:    "9090"
       DOCKER_IMAGE_NAME: "appsecco/dvna:sqlite"
-      DOJO_PRODUCT_ID:   ${{ github.event.inputs.DOJO_PRODUCT_ID || '3' }}
 
       # ── Scanner enable/disable flags ──────────────────────────────────────
       ENABLE_SEMGREP:      ${{ github.event.inputs.ENABLE_SEMGREP      || 'true' }}
@@ -88,7 +83,6 @@ jobs:
           APP_NAME=${APP_NAME}
           APP_URL=${APP_URL}
           DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME}
-          DOJO_PRODUCT_ID=${DOJO_PRODUCT_ID}
           ENABLE_SEMGREP=${ENABLE_SEMGREP}
           ENABLE_TRIVY_FS=${ENABLE_TRIVY_FS}
           ENABLE_TRIVY_IMAGE=${ENABLE_TRIVY_IMAGE}

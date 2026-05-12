@@ -1,22 +1,18 @@
 name: DevSecOps - Security Scans (CI)
 
+concurrency:
+  group: devsecops-local-runner
+  cancel-in-progress: false
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Target: DVNA — Damn Vulnerable NodeJS Application
-#
-# DVNA specifics
-# ──────────────
-#   • Node.js vulnerable app.
-#   • Uses the appsecco/dvna:sqlite Docker image for fast local startup.
-#   • Default port: 9090.
-#   • No MongoDB sidecar needed.
-#
-# Scanner enable-flags default to true. Set any to false to skip that scanner.
+# Wrapper workflow for DVNA.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
   push:
     branches: ["master", "main"]
   pull_request:
+    branches: ["master", "main"]
   workflow_dispatch:
     inputs:
       ENABLE_SEMGREP:
@@ -42,286 +38,46 @@ jobs:
     timeout-minutes: 120
 
     env:
-      SCAN_BASE_DIR: "/tmp/devsecops-scans"
-      RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.run_id }}"
-
-      # ── Target configuration ──────────────────────────────────────────────
-      APP_NAME:          "dvna"
-      APP_URL:           "http://dvna:9090"
-      APP_PORT:          "9090"
-      CONTAINER_PORT:    "9090"
-      DOCKER_IMAGE_NAME: "appsecco/dvna:sqlite"
-
-      # ── Scanner enable/disable flags ──────────────────────────────────────
-      ENABLE_SEMGREP:      ${{ github.event.inputs.ENABLE_SEMGREP      || 'true' }}
-      ENABLE_TRIVY_FS:     ${{ github.event.inputs.ENABLE_TRIVY_FS     || 'true' }}
-      ENABLE_TRIVY_IMAGE:  ${{ github.event.inputs.ENABLE_TRIVY_IMAGE  || 'true' }}
-      ENABLE_ZAP:          ${{ github.event.inputs.ENABLE_ZAP          || 'true' }}
+      ENABLE_SEMGREP:     ${{ github.event.inputs.ENABLE_SEMGREP     || 'true' }}
+      ENABLE_TRIVY_FS:    ${{ github.event.inputs.ENABLE_TRIVY_FS    || 'true' }}
+      ENABLE_TRIVY_IMAGE: ${{ github.event.inputs.ENABLE_TRIVY_IMAGE || 'true' }}
+      ENABLE_ZAP:         ${{ github.event.inputs.ENABLE_ZAP         || 'true' }}
 
     steps:
-      - name: Checkout
+      - name: Checkout app repository
         uses: actions/checkout@v4
+        with:
+          path: app
 
-      # ── Prepare output directory ───────────────────────────────────────────
-      - name: Prepare scan output directory
+      - name: Checkout VulnPriority (central CI/CD repo)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/VulnPriority
+          path: vulnpriority
+
+      - name: Run DevSecOps pipeline
         shell: bash
+        env:
+          DOJO_TOKEN: ${{ secrets.DOJO_TOKEN }}
         run: |
-          set -euo pipefail
-          mkdir -p "$RUN_OUTPUT_DIR"
-          chmod 777 "$RUN_OUTPUT_DIR"
-          rm -f "$RUN_OUTPUT_DIR"/* || true
-          echo "RUN_OUTPUT_DIR=$RUN_OUTPUT_DIR"
-          echo "APP_NAME=$APP_NAME | APP_URL=$APP_URL | IMAGE=$DOCKER_IMAGE_NAME"
-          echo "Scanners → semgrep=$ENABLE_SEMGREP trivy_fs=$ENABLE_TRIVY_FS trivy_image=$ENABLE_TRIVY_IMAGE zap=$ENABLE_ZAP"
+          bash vulnpriority/ci-cd-security/scripts/run_pipeline.sh \
+            vulnpriority/ci-cd-security/products/dvna/product.env \
+            "$GITHUB_WORKSPACE/app"
 
-      # ── Write scan metadata for the CD workflow ────────────────────────────
-      - name: Write scan_meta.env
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "$RUN_OUTPUT_DIR/scan_meta.env" <<EOF
-          APP_NAME=${APP_NAME}
-          APP_URL=${APP_URL}
-          DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME}
-          ENABLE_SEMGREP=${ENABLE_SEMGREP}
-          ENABLE_TRIVY_FS=${ENABLE_TRIVY_FS}
-          ENABLE_TRIVY_IMAGE=${ENABLE_TRIVY_IMAGE}
-          ENABLE_ZAP=${ENABLE_ZAP}
-          GIT_COMMIT=${{ github.sha }}
-          GIT_BRANCH=${{ github.ref_name }}
-          EOF
-          echo "scan_meta.env written:"
-          cat "$RUN_OUTPUT_DIR/scan_meta.env"
-
-      # ── SAST: Semgrep ──────────────────────────────────────────────────────
-      - name: "Semgrep SAST -> semgrep.json"
-        if: env.ENABLE_SEMGREP == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull returntocorp/semgrep:latest
-          docker run --rm \
-            -v "${{ github.workspace }}:/src:ro" \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            returntocorp/semgrep:latest \
-            semgrep scan \
-              --config=auto \
-              --config=p/ci \
-              --config=p/security-audit \
-              --config=p/nodejs \
-              --json \
-              --output /out/semgrep.json \
-              /src
-          test -s "$RUN_OUTPUT_DIR/semgrep.json"
-          echo "semgrep.json written ($(wc -c < "$RUN_OUTPUT_DIR/semgrep.json") bytes)"
-
-      # ── SCA: Trivy filesystem ──────────────────────────────────────────────
-      - name: "Trivy filesystem scan -> trivy_fs.json"
-        if: env.ENABLE_TRIVY_FS == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull ghcr.io/aquasecurity/trivy:0.69.3
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace:ro" \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            fs \
-            --scanners vuln,misconfig,secret,license \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --format json \
-            --output /out/trivy_fs.json \
-            /workspace
-          test -s "$RUN_OUTPUT_DIR/trivy_fs.json"
-          echo "trivy_fs.json written ($(wc -c < "$RUN_OUTPUT_DIR/trivy_fs.json") bytes)"
-
-      # ── SCA: Trivy image ───────────────────────────────────────────────────
-      - name: "Trivy image scan -> trivy_image.json"
-        if: env.ENABLE_TRIVY_IMAGE == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull "$DOCKER_IMAGE_NAME"
-          docker pull ghcr.io/aquasecurity/trivy:0.69.3
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            image \
-            --scanners vuln,misconfig,secret \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --format json \
-            --output /out/trivy_image.json \
-            "$DOCKER_IMAGE_NAME"
-          test -s "$RUN_OUTPUT_DIR/trivy_image.json"
-          echo "trivy_image.json written ($(wc -c < "$RUN_OUTPUT_DIR/trivy_image.json") bytes)"
-
-      # ── DAST: ZAP ─────────────────────────────────────────────────────────
-      - name: Create docker network (zapnet)
-        if: env.ENABLE_ZAP == 'true'
-        shell: bash
-        run: docker network create zapnet || true
-
-      # ── Start DVNA for ZAP ─────────────────────────────────────────────────
-      - name: "Start target app for ZAP: dvna"
-        if: env.ENABLE_ZAP == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          docker pull "$DOCKER_IMAGE_NAME"
-          docker pull curlimages/curl:8.6.0
-          docker rm -f "target-${APP_NAME}" 2>/dev/null || true
-
-          # Use the hostname from APP_URL as a network alias so ZAP can reach
-          # the app at exactly http://dvna:9090 inside zapnet.
-          CONTAINER_HOST=$(python3 -c "from urllib.parse import urlparse; u=urlparse('$APP_URL'); print(u.hostname)")
-
-          docker run -d \
-            --name "target-${APP_NAME}" \
-            --network zapnet \
-            --network-alias "${CONTAINER_HOST}" \
-            -p "${APP_PORT}:${CONTAINER_PORT}" \
-            "$DOCKER_IMAGE_NAME"
-
-          echo "Waiting for $APP_NAME to become ready at $APP_URL..."
-
-          for i in {1..90}; do
-            RUNNING="$(docker inspect -f '{{.State.Running}}' "target-${APP_NAME}" 2>/dev/null || echo false)"
-
-            if [ "$RUNNING" != "true" ]; then
-              echo "ERROR: target-${APP_NAME} container stopped early. Logs:"
-              docker logs "target-${APP_NAME}" --tail 200 || true
-              exit 1
-            fi
-
-            # Check from inside zapnet, because ZAP will access the target from zapnet.
-            HTTP_CODE="$(docker run --rm --network zapnet curlimages/curl:8.6.0 \
-              -sS -o /dev/null -w "%{http_code}" --max-time 5 "$APP_URL" 2>/dev/null || echo 000)"
-
-            if [[ "$HTTP_CODE" =~ ^(200|301|302)$ ]]; then
-              echo "$APP_NAME ready after ${i}×2s with HTTP $HTTP_CODE"
-              exit 0
-            fi
-
-            echo "Attempt ${i}/90: not ready yet, HTTP=$HTTP_CODE"
-            sleep 2
-          done
-
-          echo "ERROR: $APP_NAME did not become ready in time. Logs:"
-          docker logs "target-${APP_NAME}" --tail 200 || true
-          exit 1
-
-      # ── ZAP baseline scan ─────────────────────────────────────────────────
-      - name: "ZAP baseline scan -> zap.xml"
-        if: env.ENABLE_ZAP == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull ghcr.io/zaproxy/zaproxy:stable
-          docker run --rm --network zapnet \
-            -v "$RUN_OUTPUT_DIR:/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-            -t "$APP_URL" \
-            -x zap.xml \
-            -r zap.html || true
-
-          test -s "$RUN_OUTPUT_DIR/zap.xml"
-          echo "zap.xml written ($(wc -c < "$RUN_OUTPUT_DIR/zap.xml") bytes)"
-
-      - name: "Stop target app"
-        if: always() && env.ENABLE_ZAP == 'true'
-        shell: bash
-        run: |
-          docker rm -f "target-${APP_NAME}" 2>/dev/null || true
-
-      # ── Verify results ─────────────────────────────────────────────────────
-      - name: List scan results
-        if: always()
-        shell: bash
-        run: |
-          echo "=== Scan results in $RUN_OUTPUT_DIR ==="
-          ls -la "$RUN_OUTPUT_DIR" || true
-
-      # ── DEBUG: Inspect raw scan outputs ────────────────────────────────────
-      - name: "[DEBUG] Inspect scan outputs"
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          inspect_semgrep() {
-            python3 -c "
-          import json, sys
-          with open('$RUN_OUTPUT_DIR/semgrep.json') as f:
-              d = json.load(f)
-          results = d.get('results', [])
-          errors  = d.get('errors', [])
-          print(f'  findings : {len(results)}')
-          print(f'  errors   : {len(errors)}')
-          for i, r in enumerate(results[:5]):
-              print(f'  [{i+1}] {r.get(\"check_id\",\"?\")} | {r.get(\"path\",\"?\")}:{r.get(\"start\",{}).get(\"line\",\"?\")} | severity={r.get(\"extra\",{}).get(\"severity\",\"?\")}')
-          if len(results) > 5:
-              print(f'  ... and {len(results)-5} more')
-          "
-          }
-
-          inspect_trivy() {
-            local file="$1"
-            python3 -c "
-          import json, sys
-          with open('$RUN_OUTPUT_DIR/$file') as f:
-              d = json.load(f)
-          results = d.get('Results', [])
-          total = sum(len(r.get('Vulnerabilities') or []) + len(r.get('Misconfigurations') or []) for r in results)
-          print(f'  Result blocks : {len(results)} | Total vulns+misconfigs: {total}')
-          count = 0
-          for r in results:
-              for v in (r.get('Vulnerabilities') or [])[:3]:
-                  print(f'  [vuln] {v.get(\"VulnerabilityID\",\"?\")} | {v.get(\"PkgName\",\"?\")} | {v.get(\"Severity\",\"?\")}')
-                  count += 1
-                  if count >= 5: break
-              if count >= 5: break
-          " "$file"
-          }
-
-          inspect_zap() {
-            python3 -c "
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('$RUN_OUTPUT_DIR/zap.xml')
-          root = tree.getroot()
-          alerts    = root.findall('.//alertitem')
-          instances = root.findall('.//instance')
-          print(f'  alert types : {len(alerts)} | instances: {len(instances)}')
-          for a in alerts[:5]:
-              print(f'  [{a.findtext(\"alert\",\"?\")}] risk={a.findtext(\"riskdesc\",\"?\")} count={a.findtext(\"count\",\"?\")}')
-          "
-          }
-
-          for scanner in semgrep trivy_fs trivy_image zap; do
-            echo "══════════════════════════════════════════════════"
-            echo "DEBUG: $scanner"
-            echo "══════════════════════════════════════════════════"
-            case "$scanner" in
-              semgrep)
-                [[ -s "$RUN_OUTPUT_DIR/semgrep.json" ]] && inspect_semgrep || echo "  SKIPPED / missing"
-                ;;
-              trivy_fs)
-                [[ -s "$RUN_OUTPUT_DIR/trivy_fs.json" ]] && inspect_trivy trivy_fs.json || echo "  SKIPPED / missing"
-                ;;
-              trivy_image)
-                [[ -s "$RUN_OUTPUT_DIR/trivy_image.json" ]] && inspect_trivy trivy_image.json || echo "  SKIPPED / missing"
-                ;;
-              zap)
-                [[ -s "$RUN_OUTPUT_DIR/zap.xml" ]] && inspect_zap || echo "  SKIPPED / missing"
-                ;;
-            esac
-          done
-
-      # ── Upload artifacts to GitHub ─────────────────────────────────────────
       - name: Upload scan reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "ci-scan-results-${{ env.APP_NAME }}-${{ github.run_id }}"
-          path: "/tmp/devsecops-scans/${{ github.run_id }}/*"
+          name: "ci-scan-results-dvna-${{ github.run_id }}"
+          path: "/tmp/devsecops-scans/${{ github.run_id }}/"
+          if-no-files-found: ignore
+
+      - name: Cleanup scan directory
+        if: always()
+        shell: bash
+        run: |
+          set -a
+          source vulnpriority/ci-cd-security/products/dvna/product.env
+          set +a
+          export RUN_OUTPUT_DIR="/tmp/devsecops-scans/${{ github.run_id }}"
+          bash vulnpriority/ci-cd-security/scripts/cleanup.sh

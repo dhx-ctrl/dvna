@@ -4,10 +4,6 @@ concurrency:
   group: devsecops-local-runner
   cancel-in-progress: false
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Wrapper workflow for DVNA.
-# ─────────────────────────────────────────────────────────────────────────────
-
 on:
   push:
     branches: ["master", "main"]
